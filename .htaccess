@@ -1,0 +1,12 @@
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    
+    # Redirect to public directory
+    RewriteCond %{REQUEST_URI} !^/BikeBuddy/public/
+    RewriteRule ^(.*)$ public/$1 [L]
+    
+    # Handle front controller for clean URLs
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteRule ^(.*)$ index.php [QSA,L]
+</IfModule>
