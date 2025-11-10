@@ -21,12 +21,14 @@ $user_branch_id = $_SESSION['branch_id'] ?? null;
 $rental_sql = "FROM rental";
 $bicycle_sql = "FROM bicycle";
 $user_sql = "FROM app_user";
+$purchase_sql = "FROM purchase"; // *** NEW ***
 
 // Filter by branch if user is a branch manager
 if ($user_role === 'branch_manager') {
     $rental_sql .= " WHERE start_branch_id = " . (int)$user_branch_id;
     $bicycle_sql .= " WHERE branch_id = " . (int)$user_branch_id;
     $user_sql .= " WHERE branch_id = " . (int)$user_branch_id;
+    $purchase_sql .= " WHERE branch_id = " . (int)$user_branch_id; // *** NEW ***
 }
 
 // Get rental statistics
@@ -43,6 +45,20 @@ try {
 } catch (PDOException $e) {
     error_log("Report error: " . $e->getMessage());
     $stats = ['total_rentals' => 0, 'total_income' => 0, 'active_rentals' => 0, 'completed_rentals' => 0];
+}
+
+// *** NEW: Get purchase statistics (expenses) ***
+try {
+    $stmt = $pdo->query("
+        SELECT
+            SUM(cost) as total_expenses,
+            COUNT(*) as total_purchases
+        $purchase_sql
+    ");
+    $purchaseStats = $stmt->fetch(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    error_log("Purchase report error: " . $e->getMessage());
+    $purchaseStats = ['total_expenses' => 0, 'total_purchases' => 0];
 }
 
 // Get bicycle statistics
@@ -69,7 +85,8 @@ if ($user_role === 'admin') {
                 COUNT(*) as total_users,
                 COUNT(CASE WHEN role = 'admin' THEN 1 END) as admin_users,
                 COUNT(CASE WHEN role = 'branch_manager' THEN 1 END) as manager_users,
-                COUNT(CASE WHEN role = 'customer' THEN 1 END) as customer_users
+                COUNT(CASE WHEN role = 'customer' THEN 1 END) as customer_users,
+                COUNT(CASE WHEN role = 'purchasing_manager' THEN 1 END) as purchasing_users
             $user_sql
         ");
         $userStats = $userStmt->fetch(PDO::FETCH_ASSOC);
@@ -95,21 +112,20 @@ if ($user_role === 'admin') {
             <h4 class="text-muted mb-4">For: <?= htmlspecialchars($_SESSION['branch_name'] ?? 'Your Branch') ?></h4>
         <?php endif; ?>
 
-        <!-- Rental Statistics -->
         <div class="card mb-4">
-            <div class="card-header"><h5 class="mb-0">Rental Statistics</h5></div>
+            <div class="card-header"><h5 class="mb-0">Financial Statistics</h5></div>
             <div class="card-body">
                 <div class="row">
                     <div class="col-md-3">
                         <div class="text-center">
-                            <h3 class="text-primary"><?php echo $stats['total_rentals']; ?></h3>
-                            <p class="text-muted">Total Rentals</p>
+                            <h3 class="text-success">KES <?php echo number_format($stats['total_income'] ?? 0, 2); ?></h3>
+                            <p class="text-muted">Total Income (from <?= $stats['total_rentals'] ?> rentals)</p>
                         </div>
                     </div>
                     <div class="col-md-3">
                         <div class="text-center">
-                            <h3 class="text-success">KES <?php echo number_format($stats['total_income'] ?? 0, 2); ?></h3>
-                            <p class="text-muted">Total Income</p>
+                            <h3 class="text-danger">KES <?php echo number_format($purchaseStats['total_expenses'] ?? 0, 2); ?></h3>
+                            <p class="text-muted">Total Expenses (from <?= $purchaseStats['total_purchases'] ?> purchases)</p>
                         </div>
                     </div>
                     <div class="col-md-3">
@@ -128,7 +144,6 @@ if ($user_role === 'admin') {
             </div>
         </div>
 
-        <!-- Bicycle Statistics -->
         <div class="card mb-4">
             <div class="card-header"><h5 class="mb-0">Bicycle Statistics</h5></div>
             <div class="card-body">
@@ -155,48 +170,35 @@ if ($user_role === 'admin') {
             </div>
         </div>
 
-        <!-- User Statistics (Admin only) -->
         <?php if ($user_role === 'admin'): ?>
         <div class="card">
             <div class="card-header"><h5 class="mb-0">User Statistics</h5></div>
             <div class="card-body">
                 <div class="row">
                     <div class="col-md-3">
-                        <div class="text-center">
-                            <h3 class="text-primary"><?php echo $userStats['total_users']; ?></h3>
-                            <p class="text-muted">Total Users</p>
-                        </div>
+                        <h3 class="text-primary text-center"><?php echo $userStats['total_users']; ?></h3>
+                        <p class="text-muted text-center">Total Users</p>
                     </div>
                     <div class="col-md-3">
-                        <div class="text-center">
-                            <h3 class="text-info"><?php echo $userStats['customer_users']; ?></h3>
-                            <p class="text-muted">Customers</p>
-                        </div>
+                        <h3 class="text-info text-center"><?php echo $userStats['customer_users']; ?></h3>
+                        <p class="text-muted text-center">Customers</p>
                     </div>
-                    <div class="col-md-3">
-                        <div class="text-center">
-                            <h3 class="text-warning"><?php echo $userStats['manager_users']; ?></h3>
-                            <p class="text-muted">Branch Managers</p>
-                        </div>
+                    <div class="col-md-2">
+                        <h3 class="text-warning text-center"><?php echo $userStats['manager_users']; ?></h3>
+                        <p class="text-muted text-center">Branch Managers</p>
                     </div>
-                    <div class="col-md-3">
-                        <div class="text-center">
-                            <h3 class="text-danger"><?php echo $userStats['admin_users']; ?></h3>
-                            <p class="text-muted">Admins</p>
-                        </div>
+                     <div class="col-md-2">
+                        <h3 class="text-secondary text-center"><?php echo $userStats['purchasing_users']; ?></h3>
+                        <p class="text-muted text-center">Purchasing</p>
+                    </div>
+                    <div class="col-md-2">
+                        <h3 class="text-danger text-center"><?php echo $userStats['admin_users']; ?></h3>
+                        <p class="text-muted text-center">Admins</p>
                     </div>
                 </div>
             </div>
         </div>
         <?php endif; ?>
-
-        <div class="mt-4">
-            <a href="manage_rentals.php" class="btn btn-primary">View All Rentals</a>
-            <a href="manage_bicycles.php" class="btn btn-secondary">Manage Bicycles</a>
-            <?php if ($user_role === 'admin'): ?>
-                <a href="manage_users.php" class="btn btn-secondary">Manage Users</a>
-            <?php endif; ?>
-        </div>
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
