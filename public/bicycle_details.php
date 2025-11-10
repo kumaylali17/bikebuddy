@@ -17,9 +17,10 @@ if (!$bicycle_id) {
 
 try {
     $stmt = $pdo->prepare("
-        SELECT b.*, c.name as category_name
+        SELECT b.*, c.name as category_name, br.name as branch_name
         FROM bicycle b
         LEFT JOIN category c ON b.category_id = c.category_id
+        LEFT JOIN branch br ON b.branch_id = br.branch_id
         WHERE b.bicycle_id = :bicycle_id
     ");
     $stmt->execute(['bicycle_id' => $bicycle_id]);
@@ -28,8 +29,19 @@ try {
     if (!$bicycle) {
         throw new Exception('Bicycle not found');
     }
+
+    // *** NEW: Authorization Check ***
+    // If user is logged in, they can only view details for bikes at their branch.
+    // Logged-out users can view details for any bike.
+    if (isset($_SESSION['user_id']) && $bicycle['branch_id'] != $_SESSION['branch_id']) {
+        $_SESSION['error'] = 'This bicycle is not available at your branch.';
+        header('Location: bicycles.php');
+        exit();
+    }
+
 } catch (Exception $e) {
     error_log("Bicycle details error: " . $e->getMessage());
+    $_SESSION['error'] = $e->getMessage();
     header('Location: bicycles.php');
     exit();
 }
@@ -41,6 +53,7 @@ try {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title><?php echo htmlspecialchars($bicycle['name']); ?> - BikeBuddy</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
     <style>
         .bicycle-image {
             max-height: 400px;
@@ -51,9 +64,6 @@ try {
             font-size: 1.5rem;
             font-weight: bold;
             color: #28a745;
-        }
-        .status-badge {
-            font-size: 0.9rem;
         }
     </style>
 </head>
@@ -72,29 +82,28 @@ try {
         <div class="row">
             <div class="col-md-8">
                 <div class="card mb-4">
-                    <?php if (!empty($bicycle['image_url'])): ?>
-                        <img src="<?php echo htmlspecialchars($bicycle['image_url']); ?>"
-                             class="card-img-top bicycle-image"
-                             alt="<?php echo htmlspecialchars($bicycle['name']); ?>">
-                    <?php else: ?>
-                        <div class="bg-light d-flex align-items-center justify-content-center" style="height: 400px;">
-                            <span class="text-muted">No Image Available</span>
-                        </div>
-                    <?php endif; ?>
+                    <img src="<?php echo htmlspecialchars($bicycle['image_url'] ?? 'https://placehold.co/800x400/e2e8f0/64748b?text=No+Image'); ?>"
+                         class="card-img-top bicycle-image"
+                         alt="<?php echo htmlspecialchars($bicycle['name']); ?>">
 
                     <div class="card-body">
                         <div class="d-flex justify-content-between align-items-start mb-3">
                             <h2 class="card-title mb-0"><?php echo htmlspecialchars($bicycle['name']); ?></h2>
-                            <span class="badge bg-<?php echo $bicycle['status'] === 'available' ? 'success' : 'warning'; ?> status-badge">
+                            <span class="badge bg-<?php echo $bicycle['status'] === 'available' ? 'success' : 'warning'; ?> fs-6">
                                 <?php echo ucfirst($bicycle['status']); ?>
                             </span>
                         </div>
 
-                        <?php if (!empty($bicycle['category_name'])): ?>
-                            <p class="text-muted mb-3">
-                                <i class="bi bi-tag"></i> Category: <?php echo htmlspecialchars($bicycle['category_name']); ?>
-                            </p>
-                        <?php endif; ?>
+                        <div class="d-flex justify-content-between text-muted mb-3">
+                            <span>
+                                <i class="bi bi-tag"></i> Category: 
+                                <strong><?php echo htmlspecialchars($bicycle['category_name'] ?? 'N/A'); ?></strong>
+                            </span>
+                            <span>
+                                <i class="bi bi-geo-alt-fill"></i> Branch:
+                                <strong><?php echo htmlspecialchars($bicycle['branch_name'] ?? 'N/A'); ?></strong>
+                            </span>
+                        </div>
 
                         <p class="card-text">
                             <?php echo nl2br(htmlspecialchars($bicycle['description'] ?? 'No description available.')); ?>
@@ -112,11 +121,9 @@ try {
             </div>
 
             <div class="col-md-4">
-                <?php if ($bicycle['status'] === 'available'): ?>
+                <?php if ($bicycle['status'] === 'available' && isset($_SESSION['user_id'])): ?>
                     <div class="card">
-                        <div class="card-header">
-                            <h5 class="mb-0">Rent This Bicycle</h5>
-                        </div>
+                        <div class="card-header"><h5 class="mb-0">Rent This Bicycle</h5></div>
                         <div class="card-body">
                             <a href="rent.php?bicycle_id=<?php echo $bicycle['bicycle_id']; ?>"
                                class="btn btn-primary btn-lg w-100">
@@ -127,11 +134,17 @@ try {
                             </p>
                         </div>
                     </div>
+                <?php elseif (!isset($_SESSION['user_id'])): ?>
+                     <div class="card">
+                        <div class="card-header"><h5 class="mb-0">Login to Rent</h5></div>
+                        <div class="card-body">
+                            <p class="text-muted">You must be logged in to rent a bicycle.</p>
+                            <a href="login.php?redirect=bicycle_details.php?id=<?= $bicycle_id ?>" class="btn btn-primary w-100">Login</a>
+                        </div>
+                    </div>
                 <?php else: ?>
                     <div class="card">
-                        <div class="card-header">
-                            <h5 class="mb-0">Not Available</h5>
-                        </div>
+                        <div class="card-header"><h5 class="mb-0">Not Available</h5></div>
                         <div class="card-body">
                             <p class="text-muted">This bicycle is currently <?php echo $bicycle['status']; ?>.</p>
                             <a href="bicycles.php" class="btn btn-secondary">Browse Other Bicycles</a>
@@ -140,9 +153,7 @@ try {
                 <?php endif; ?>
 
                 <div class="card mt-3">
-                    <div class="card-header">
-                        <h5 class="mb-0">Bicycle Details</h5>
-                    </div>
+                    <div class="card-header"><h5 class="mb-0">Bicycle Details</h5></div>
                     <div class="card-body">
                         <dl class="row">
                             <dt class="col-sm-4">ID</dt>
@@ -150,9 +161,9 @@ try {
 
                             <dt class="col-sm-4">Category</dt>
                             <dd class="col-sm-8"><?php echo htmlspecialchars($bicycle['category_name'] ?? 'Uncategorized'); ?></dd>
-
-                            <dt class="col-sm-4">Price</dt>
-                            <dd class="col-sm-8">KES <?php echo number_format($bicycle['price_per_day'], 2); ?>/day</dd>
+                            
+                            <dt class="col-sm-4">Branch</dt>
+                            <dd class="col-sm-8"><?php echo htmlspecialchars($bicycle['branch_name'] ?? 'N/A'); ?></dd>
 
                             <dt class="col-sm-4">Status</dt>
                             <dd class="col-sm-8">
@@ -160,7 +171,7 @@ try {
                                     <?php echo ucfirst($bicycle['status']); ?>
                                 </span>
                             </dd>
-
+                            
                             <dt class="col-sm-4">Added</dt>
                             <dd class="col-sm-8"><?php echo date('M j, Y', strtotime($bicycle['created_at'])); ?></dd>
                         </dl>
@@ -168,15 +179,8 @@ try {
                 </div>
             </div>
         </div>
-
-        <div class="mt-4">
-            <a href="bicycles.php" class="btn btn-outline-secondary">
-                <i class="bi bi-arrow-left"></i> Back to Bicycles
-            </a>
-        </div>
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
 </body>
 </html>

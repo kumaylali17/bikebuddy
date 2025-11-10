@@ -14,32 +14,38 @@ if (!isset($_SESSION['user_id'])) {
     exit();
 }
 
-// Get user's active rentals
+// Get user's active rentals *at their branch*
 try {
     $stmt = $pdo->prepare("
         SELECT r.*, b.name as bicycle_name, b.image_url
         FROM rental r
-        JOIN bicycle b ON r.bicycle_id = b.bicycle_id  -- Changed b.id to b.bicycle_id
+        JOIN bicycle b ON r.bicycle_id = b.bicycle_id
         WHERE r.user_id = :user_id 
         AND r.status = 'active'
+        AND r.start_branch_id = :branch_id
         ORDER BY r.start_date DESC
-        LIMIT 5
+        LIMIT 3
     ");
-    $stmt->execute(['user_id' => $_SESSION['user_id']]);
+    $stmt->execute([
+        'user_id' => $_SESSION['user_id'],
+        'branch_id' => $_SESSION['branch_id']
+    ]);
     $active_rentals = $stmt->fetchAll();
 } catch (PDOException $e) {
     error_log("Dashboard error: " . $e->getMessage());
     $active_rentals = [];
 }
 
-// Get available bicycles
+// Get available bicycles *at their branch*
 try {
-    $stmt = $pdo->query("
+    $stmt = $pdo->prepare("
         SELECT * FROM bicycle 
         WHERE status = 'available' 
+        AND branch_id = :branch_id
         ORDER BY created_at DESC 
-        LIMIT 5
+        LIMIT 3
     ");
+    $stmt->execute(['branch_id' => $_SESSION['branch_id']]);
     $available_bikes = $stmt->fetchAll();
 } catch (PDOException $e) {
     error_log("Available bikes error: " . $e->getMessage());
@@ -70,31 +76,34 @@ try {
     
     <div class="container py-4">
         <h2 class="mb-4">Welcome back, <?php echo htmlspecialchars($_SESSION['username']); ?>!</h2>
+         <?php if (isset($_SESSION['success'])): ?>
+            <div class="alert alert-success alert-dismissible fade show" role="alert">
+                <?= htmlspecialchars($_SESSION['success']) ?>
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            </div>
+            <?php unset($_SESSION['success']); ?>
+        <?php endif; ?>
         
         <!-- Active Rentals -->
         <div class="card mb-4">
-            <div class="card-header">
-                <h5 class="mb-0">Your Active Rentals</h5>
-            </div>
+            <div class="card-header"><h5 class="mb-0">Your Active Rentals (at this branch)</h5></div>
             <div class="card-body">
                 <?php if (empty($active_rentals)): ?>
-                    <p class="text-muted">You don't have any active rentals.</p>
+                    <p class="text-muted">You don't have any active rentals at this branch.</p>
                     <a href="bicycles.php" class="btn btn-primary">Rent a Bike</a>
                 <?php else: ?>
                     <div class="row">
                         <?php foreach ($active_rentals as $rental): ?>
                             <div class="col-md-4 mb-3">
                                 <div class="card h-100">
-                                    <?php if (!empty($rental['image_url'])): ?>
-                                        <img src="<?php echo htmlspecialchars($rental['image_url']); ?>" 
-                                             class="card-img-top bike-img" 
-                                             alt="<?php echo htmlspecialchars($rental['bicycle_name']); ?>">
-                                    <?php endif; ?>
+                                    <img src="<?php echo htmlspecialchars($rental['image_url'] ?? 'https://placehold.co/400x300/e2e8f0/64748b?text=No+Image'); ?>" 
+                                         class="card-img-top bike-img" 
+                                         alt="<?php echo htmlspecialchars($rental['bicycle_name']); ?>">
                                     <div class="card-body">
                                         <h5 class="card-title"><?php echo htmlspecialchars($rental['bicycle_name']); ?></h5>
                                         <p class="card-text">
                                             <small class="text-muted">
-                                                Rented on: <?php echo date('M j, Y', strtotime($rental['start_date'])); ?>
+                                                Rented: <?php echo date('M j, Y', strtotime($rental['start_date'])); ?>
                                             </small>
                                         </p>
                                         <a href="rental_details.php?id=<?php echo $rental['id']; ?>" 
@@ -112,22 +121,18 @@ try {
 
         <!-- Available Bikes -->
         <div class="card">
-            <div class="card-header">
-                <h5 class="mb-0">Available Bicycles</h5>
-            </div>
+            <div class="card-header"><h5 class="mb-0">Available Bicycles (at this branch)</h5></div>
             <div class="card-body">
                 <?php if (empty($available_bikes)): ?>
-                    <p class="text-muted">No bicycles available at the moment.</p>
+                    <p class="text-muted">No bicycles available at this branch right now.</p>
                 <?php else: ?>
                     <div class="row">
                         <?php foreach ($available_bikes as $bike): ?>
                             <div class="col-md-4 mb-3">
                                 <div class="card h-100 bike-card">
-                                    <?php if (!empty($bike['image_url'])): ?>
-                                        <img src="<?php echo htmlspecialchars($bike['image_url']); ?>" 
-                                             class="card-img-top bike-img" 
-                                             alt="<?php echo htmlspecialchars($bike['name']); ?>">
-                                    <?php endif; ?>
+                                    <img src="<?php echo htmlspecialchars($bike['image_url'] ?? 'https://placehold.co/400x300/e2e8f0/64748b?text=No+Image'); ?>" 
+                                         class="card-img-top bike-img" 
+                                         alt="<?php echo htmlspecialchars($bike['name']); ?>">
                                     <div class="card-body">
                                         <h5 class="card-title"><?php echo htmlspecialchars($bike['name']); ?></h5>
                                         <p class="card-text">

@@ -8,34 +8,54 @@ session_start([
 
 require_once __DIR__ . '/../config/db.php';
 
-// Check if user is logged in and is admin
-if (!isset($_SESSION['user_id']) || !$_SESSION['is_admin']) {
+// Check if user is logged in and is an admin or branch manager
+if (!isset($_SESSION['user_id']) || !in_array($_SESSION['role'], ['admin', 'branch_manager'])) {
     header('Location: login.php');
     exit();
 }
+
+$user_role = $_SESSION['role'];
+$user_branch_id = $_SESSION['branch_id'] ?? null;
 
 // Pagination
 $page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
 $perPage = 10;
 $offset = ($page - 1) * $perPage;
 
-// Get all rentals with user and bicycle info
+// --- Base SQL ---
+$sql = "
+    SELECT
+        r.*,
+        u.username,
+        u.email,
+        b.name as bicycle_name,
+        br.name as branch_name
+    FROM rental r
+    JOIN app_user u ON r.user_id = u.user_id
+    JOIN bicycle b ON r.bicycle_id = b.bicycle_id
+    LEFT JOIN branch br ON r.start_branch_id = br.branch_id
+";
+$countSql = "SELECT COUNT(*) FROM rental r";
+$params = [];
+
+// *** NEW: Filter by branch for Branch Managers ***
+if ($user_role === 'branch_manager') {
+    $sql .= " WHERE r.start_branch_id = :branch_id";
+    $countSql .= " WHERE r.start_branch_id = :branch_id";
+    $params['branch_id'] = $user_branch_id;
+}
+
+$sql .= " ORDER BY r.created_at DESC LIMIT :limit OFFSET :offset";
+$params['limit'] = $perPage;
+$params['offset'] = $offset;
+
+// Get all rentals
 try {
-    $stmt = $pdo->prepare("
-        SELECT
-            r.*,
-            u.username,
-            u.email,
-            b.name as bicycle_name,
-            b.image_url
-        FROM rental r
-        JOIN app_user u ON r.user_id = u.user_id
-        JOIN bicycle b ON r.bicycle_id = b.bicycle_id
-        ORDER BY r.created_at DESC
-        LIMIT :limit OFFSET :offset
-    ");
-    $stmt->bindValue(':limit', $perPage, PDO::PARAM_INT);
-    $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+    $stmt = $pdo->prepare($sql);
+    // Bind all params
+    foreach ($params as $key => &$val) {
+        $stmt->bindParam(":$key", $val, is_int($val) ? PDO::PARAM_INT : PDO::PARAM_STR);
+    }
     $stmt->execute();
     $rentals = $stmt->fetchAll();
 } catch (PDOException $e) {
@@ -45,7 +65,12 @@ try {
 
 // Get total count for pagination
 try {
-    $countStmt = $pdo->query("SELECT COUNT(*) FROM rental");
+    $countStmt = $pdo->prepare($countSql);
+    // Bind branch_id if it's set
+    if (isset($params['branch_id'])) {
+        $countStmt->bindParam(":branch_id", $params['branch_id'], PDO::PARAM_INT);
+    }
+    $countStmt->execute();
     $total = $countStmt->fetchColumn();
 } catch (PDOException $e) {
     error_log("Count error: " . $e->getMessage());
@@ -62,16 +87,7 @@ $totalPages = ceil($total / $perPage);
     <title>Manage Rentals - BikeBuddy</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
-        .rental-card {
-            transition: transform 0.2s;
-        }
-        .rental-card:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
-        }
-        .status-badge {
-            font-size: 0.85rem;
-        }
+        .status-badge { font-size: 0.85rem; }
     </style>
 </head>
 <body>
@@ -82,93 +98,64 @@ $totalPages = ceil($total / $perPage);
             <h2>Manage Rentals</h2>
             <a href="report.php" class="btn btn-outline-primary">View Reports</a>
         </div>
+        <?php if ($user_role === 'branch_manager'): ?>
+            <h4 class="text-muted mb-4">For: <?= htmlspecialchars($_SESSION['branch_name'] ?? 'Your Branch') ?></h4>
+        <?php endif; ?>
 
         <?php if (empty($rentals)): ?>
             <div class="alert alert-info">
                 <h4>No rentals found</h4>
-                <p>There are currently no rentals in the system.</p>
+                <p>There are currently no rentals for this branch.</p>
             </div>
         <?php else: ?>
-            <div class="row">
-                <?php foreach ($rentals as $rental): ?>
-                    <div class="col-md-6 mb-4">
-                        <div class="card rental-card">
-                            <div class="card-body">
-                                <div class="d-flex justify-content-between align-items-start mb-3">
-                                    <h5 class="card-title mb-0">
-                                        <?php echo htmlspecialchars($rental['bicycle_name']); ?>
-                                    </h5>
-                                    <span class="badge bg-<?php
-                                        echo $rental['status'] === 'completed' ? 'success' :
-                                             ($rental['status'] === 'active' ? 'primary' : 'warning');
-                                    ?> status-badge">
-                                        <?php echo ucfirst($rental['status']); ?>
-                                    </span>
-                                </div>
-
-                                <div class="row mb-3">
-                                    <div class="col-sm-4">
-                                        <strong>Rental #<?php echo $rental['id']; ?></strong>
-                                    </div>
-                                    <div class="col-sm-8">
-                                        <small class="text-muted">
-                                            <?php echo date('M j, Y', strtotime($rental['created_at'])); ?>
-                                        </small>
-                                    </div>
-                                </div>
-
-                                <div class="row mb-3">
-                                    <div class="col-sm-4">Customer:</div>
-                                    <div class="col-sm-8">
-                                        <a href="mailto:<?php echo htmlspecialchars($rental['email']); ?>">
-                                            <?php echo htmlspecialchars($rental['username']); ?>
-                                        </a>
-                                    </div>
-                                </div>
-
-                                <div class="row mb-3">
-                                    <div class="col-sm-4">Period:</div>
-                                    <div class="col-sm-8">
-                                        <?php echo date('M j, Y', strtotime($rental['start_date'])); ?>
-                                        <?php if ($rental['end_date']): ?>
-                                            - <?php echo date('M j, Y', strtotime($rental['end_date'])); ?>
-                                        <?php endif; ?>
-                                    </div>
-                                </div>
-
-                                <div class="row mb-3">
-                                    <div class="col-sm-4">Cost:</div>
-                                    <div class="col-sm-8">
-                                        <strong>KES <?php echo number_format($rental['total_cost'], 2); ?></strong>
-                                    </div>
-                                </div>
-
-                                <?php if ($rental['return_date']): ?>
-                                    <div class="row mb-3">
-                                        <div class="col-sm-4">Returned:</div>
-                                        <div class="col-sm-8">
-                                            <?php echo date('M j, Y', strtotime($rental['return_date'])); ?>
-                                        </div>
-                                    </div>
-                                <?php endif; ?>
-
-                                <div class="d-grid gap-2">
-                                    <a href="rental_details.php?id=<?php echo $rental['id']; ?>"
-                                       class="btn btn-outline-primary btn-sm">
-                                        View Details
-                                    </a>
-                                    <?php if ($rental['status'] === 'active'): ?>
-                                        <a href="return.php?rental_id=<?php echo $rental['id']; ?>"
-                                           class="btn btn-success btn-sm"
-                                           onclick="return confirm('Mark this rental as completed?')">
-                                            Mark as Completed
-                                        </a>
-                                    <?php endif; ?>
-                                </div>
-                            </div>
-                        </div>
+            <div class="card">
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-hover align-middle">
+                            <thead>
+                                <tr>
+                                    <th>Rental ID</th>
+                                    <th>Bicycle</th>
+                                    <th>Customer</th>
+                                    <th>Branch</th>
+                                    <th>Period</th>
+                                    <th>Cost</th>
+                                    <th>Status</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($rentals as $rental): ?>
+                                    <tr>
+                                        <td><strong>#<?= $rental['id'] ?></strong></td>
+                                        <td><?= htmlspecialchars($rental['bicycle_name']) ?></td>
+                                        <td><?= htmlspecialchars($rental['username']) ?></td>
+                                        <td><?= htmlspecialchars($rental['branch_name'] ?? 'N/A') ?></td>
+                                        <td>
+                                            <?= date('M j, Y', strtotime($rental['start_date'])) ?> to
+                                            <?= date('M j, Y', strtotime($rental['end_date'])) ?>
+                                        </td>
+                                        <td>KES <?= number_format($rental['total_cost'], 2) ?></td>
+                                        <td>
+                                            <span class="badge bg-<?php
+                                                echo $rental['status'] === 'completed' ? 'success' :
+                                                     ($rental['status'] === 'active' ? 'primary' : 'warning');
+                                            ?> status-badge">
+                                                <?php echo ucfirst($rental['status']); ?>
+                                            </span>
+                                        </td>
+                                        <td>
+                                             <a href="rental_details.php?id=<?php echo $rental['id']; ?>"
+                                               class="btn btn-outline-primary btn-sm">
+                                                Details
+                                            </a>
+                                        </td>
+                                    </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
                     </div>
-                <?php endforeach; ?>
+                </div>
             </div>
 
             <!-- Pagination -->

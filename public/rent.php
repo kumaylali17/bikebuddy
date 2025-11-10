@@ -15,18 +15,20 @@ if (!isset($_SESSION['user_id'])) {
 }
 
 $user_id = $_SESSION['user_id'];
+$user_branch_id = $_SESSION['branch_id']; // User's home branch
 $error = '';
 $success = '';
 
-// Get available bicycles
+// Get available bicycles *at the user's branch*
 try {
-    $stmt = $pdo->query("
+    $stmt = $pdo->prepare("
         SELECT b.*, c.name as category_name
         FROM bicycle b
         LEFT JOIN category c ON b.category_id = c.category_id
-        WHERE b.status = 'available'
+        WHERE b.status = 'available' AND b.branch_id = ?
         ORDER BY b.name
     ");
+    $stmt->execute([$user_branch_id]);
     $bicycles = $stmt->fetchAll();
 } catch (PDOException $e) {
     error_log("Available bicycles error: " . $e->getMessage());
@@ -47,36 +49,46 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bicycle_id'])) {
             throw new Exception('End date must be after start date.');
         }
 
-        if (strtotime($start_date) < time()) {
+        if (strtotime($start_date) < time() - 3600) { // Allow for small delays
             throw new Exception('Start date cannot be in the past.');
         }
 
         // Calculate number of days
         $start = new DateTime($start_date);
         $end = new DateTime($end_date);
-        $days = $start->diff($end)->days;
+        $diff = $start->diff($end);
+        $days = $diff->days;
 
         if ($days < 1) {
             $days = 1; // Minimum 1 day
         }
 
-        // Get bicycle price
-        $priceStmt = $pdo->prepare("SELECT price_per_day FROM bicycle WHERE bicycle_id = ?");
+        // Get bicycle price and verify it's at the correct branch
+        $priceStmt = $pdo->prepare("
+            SELECT price_per_day, branch_id 
+            FROM bicycle 
+            WHERE bicycle_id = ? AND status = 'available'
+        ");
         $priceStmt->execute([$bicycle_id]);
         $bike = $priceStmt->fetch();
 
         if (!$bike) {
             throw new Exception('Bicycle not found or not available.');
         }
+        
+        // *** NEW: Verify bike is at the user's branch ***
+        if ($bike['branch_id'] != $user_branch_id) {
+             throw new Exception('This bicycle is not available at your branch.');
+        }
 
         $total_cost = $days * $bike['price_per_day'];
 
         // Create rental record
         $rentalStmt = $pdo->prepare("
-            INSERT INTO rental (user_id, bicycle_id, start_date, end_date, total_cost, status)
-            VALUES (?, ?, ?, ?, ?, 'active')
+            INSERT INTO rental (user_id, bicycle_id, start_date, end_date, total_cost, status, start_branch_id)
+            VALUES (?, ?, ?, ?, ?, 'active', ?)
         ");
-        $rentalStmt->execute([$user_id, $bicycle_id, $start_date, $end_date, $total_cost]);
+        $rentalStmt->execute([$user_id, $bicycle_id, $start_date, $end_date, $total_cost, $user_branch_id]);
 
         // Update bicycle status
         $updateStmt = $pdo->prepare("UPDATE bicycle SET status = 'rented' WHERE bicycle_id = ?");
@@ -85,7 +97,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bicycle_id'])) {
         $pdo->commit();
 
         $_SESSION['success'] = 'Bicycle rented successfully! Total cost: KES ' . number_format($total_cost, 2);
-        header('Location: dashboard.php');
+        header('Location: my_rentals.php');
         exit();
 
     } catch (Exception $e) {
@@ -102,6 +114,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bicycle_id'])) {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Rent a Bicycle - BikeBuddy</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
     <style>
         .bicycle-card {
             transition: transform 0.2s;
@@ -143,42 +156,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bicycle_id'])) {
             <div class="alert alert-danger"><?php echo htmlspecialchars($error); ?></div>
         <?php endif; ?>
 
-        <h2 class="mb-4">Available Bicycles</h2>
+        <h2 class="mb-4">Available Bicycles at <?= htmlspecialchars($_SESSION['branch_name'] ?? 'Your Branch') ?></h2>
 
         <?php if (empty($bicycles)): ?>
             <div class="alert alert-info">
-                No bicycles are currently available for rent. Please check back later.
+                No bicycles are currently available for rent at this branch.
             </div>
         <?php else: ?>
             <div class="row row-cols-1 row-cols-md-3 g-4">
                 <?php foreach ($bicycles as $bike): ?>
                     <div class="col">
                         <div class="card bicycle-card h-100">
-                            <?php if ($bike['image_url']): ?>
-                                <img src="<?php echo htmlspecialchars($bike['image_url']); ?>"
-                                     class="card-img-top bicycle-image"
-                                     alt="<?php echo htmlspecialchars($bike['name']); ?>">
-                            <?php else: ?>
-                                <div class="text-center bg-light p-5">
-                                    <i class="bi bi-bicycle" style="font-size: 4rem; color: #6c757d;"></i>
-                                </div>
-                            <?php endif; ?>
+                            <img src="<?php echo htmlspecialchars($bike['image_url'] ?? 'https://placehold.co/400x300/e2e8f0/64748b?text=No+Image'); ?>"
+                                 class="card-img-top bicycle-image"
+                                 alt="<?php echo htmlspecialchars($bike['name']); ?>">
 
                             <div class="price-tag">
                                 KES <?php echo number_format($bike['price_per_day'], 2); ?>/day
                             </div>
 
-                            <div class="card-body">
+                            <div class="card-body d-flex flex-column">
                                 <h5 class="card-title"><?php echo htmlspecialchars($bike['name']); ?></h5>
                                 <?php if ($bike['category_name']): ?>
-                                    <p class="text-muted">Category: <?php echo htmlspecialchars($bike['category_name']); ?></p>
+                                    <p class="text-muted small">Category: <?php echo htmlspecialchars($bike['category_name']); ?></p>
                                 <?php endif; ?>
-                                <p class="card-text">
-                                    <?php echo nl2br(htmlspecialchars($bike['description'] ?? 'No description available.')); ?>
+                                <p class="card-text flex-grow-1">
+                                    <?php echo nl2br(htmlspecialchars(substr($bike['description'] ?? 'No description.', 0, 100))); ?>
+                                    <?php if (strlen($bike['description'] ?? '') > 100): ?>...<?php endif; ?>
                                 </p>
-
                                 <button type="button"
-                                        class="btn btn-primary w-100"
+                                        class="btn btn-primary w-100 mt-auto"
                                         data-bs-toggle="modal"
                                         data-bs-target="#rentModal"
                                         data-bike-id="<?php echo $bike['bicycle_id']; ?>"
@@ -200,18 +207,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bicycle_id'])) {
             <div class="modal-content">
                 <form id="rentForm" method="POST">
                     <input type="hidden" name="bicycle_id" id="modalBikeId">
-
                     <div class="modal-header">
                         <h5 class="modal-title" id="rentModalLabel">Rent Bicycle</h5>
                         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                     </div>
-
                     <div class="modal-body">
                         <div class="mb-3">
                             <label for="bikeName" class="form-label">Bicycle</label>
                             <input type="text" class="form-control" id="bikeName" readonly>
                         </div>
-
                         <div class="row">
                             <div class="col-md-6 mb-3">
                                 <label for="startDate" class="form-label">Start Date</label>
@@ -222,7 +226,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bicycle_id'])) {
                                 <input type="date" class="form-control" id="endDate" name="end_date" required>
                             </div>
                         </div>
-
                         <div class="alert alert-info">
                             <div class="d-flex justify-content-between">
                                 <span>Estimated Cost:</span>
@@ -231,7 +234,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bicycle_id'])) {
                             <small class="text-muted" id="durationText"></small>
                         </div>
                     </div>
-
                     <div class="modal-footer">
                         <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
                         <button type="submit" class="btn btn-primary">Confirm Rental</button>
@@ -243,7 +245,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bicycle_id'])) {
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     <script>
-        // Initialize the modal
         const rentModal = document.getElementById('rentModal');
         if (rentModal) {
             rentModal.addEventListener('show.bs.modal', function (event) {
@@ -252,78 +253,52 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bicycle_id'])) {
                 const bikeName = button.getAttribute('data-bike-name');
                 const pricePerDay = parseFloat(button.getAttribute('data-price'));
 
-                // Set bike info
                 document.getElementById('modalBikeId').value = bikeId;
                 document.getElementById('bikeName').value = bikeName;
 
-                // Set default dates (today and tomorrow)
                 const today = new Date();
                 const tomorrow = new Date(today);
                 tomorrow.setDate(tomorrow.getDate() + 1);
 
-                document.getElementById('startDate').value = today.toISOString().split('T')[0];
-                document.getElementById('endDate').value = tomorrow.toISOString().split('T')[0];
+                const formatDate = (date) => date.toISOString().split('T')[0];
+                document.getElementById('startDate').value = formatDate(today);
+                document.getElementById('endDate').value = formatDate(tomorrow);
+                document.getElementById('startDate').min = formatDate(today);
+                document.getElementById('endDate').min = formatDate(tomorrow);
 
-                // Initial calculation
                 updateCost(pricePerDay);
 
-                // Add event listeners for date changes
-                document.getElementById('startDate').addEventListener('change', () => updateCost(pricePerDay));
+                document.getElementById('startDate').addEventListener('change', () => {
+                    const startDate = new Date(document.getElementById('startDate').value);
+                    const minEndDate = new Date(startDate);
+                    minEndDate.setDate(minEndDate.getDate() + 1);
+                    document.getElementById('endDate').min = formatDate(minEndDate);
+                    if (new Date(document.getElementById('endDate').value) <= startDate) {
+                        document.getElementById('endDate').value = formatDate(minEndDate);
+                    }
+                    updateCost(pricePerDay);
+                });
                 document.getElementById('endDate').addEventListener('change', () => updateCost(pricePerDay));
             });
         }
 
-        // Calculate and update cost
         function updateCost(pricePerDay) {
             const startDate = new Date(document.getElementById('startDate').value);
             const endDate = new Date(document.getElementById('endDate').value);
 
-            if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+            if (isNaN(startDate.getTime()) || isNaN(endDate.getTime()) || endDate <= startDate) {
+                document.getElementById('estimatedCost').textContent = 'KES 0.00';
+                document.getElementById('durationText').textContent = 'End date must be after start date.';
                 return;
             }
 
-            // Calculate duration in days (minimum 1 day)
             const timeDiff = endDate.getTime() - startDate.getTime();
             const days = Math.max(1, Math.ceil(timeDiff / (1000 * 3600 * 24)));
             const totalCost = days * pricePerDay;
 
-            // Update UI
             document.getElementById('estimatedCost').textContent = 'KES ' + totalCost.toFixed(2);
-
-            // Format duration text
             document.getElementById('durationText').textContent = `Duration: ${days} day${days !== 1 ? 's' : ''}`;
         }
-
-        // Form validation
-        document.getElementById('rentForm').addEventListener('submit', function(e) {
-            const startDate = new Date(document.getElementById('startDate').value);
-            const endDate = new Date(document.getElementById('endDate').value);
-
-            if (endDate <= startDate) {
-                e.preventDefault();
-                alert('End date must be after start date.');
-                return false;
-            }
-
-            if (startDate < new Date().setHours(0, 0, 0, 0)) {
-                e.preventDefault();
-                alert('Start date cannot be in the past.');
-                return false;
-            }
-
-            return true;
-        });
-
-        // Set minimum date for start date (today)
-        document.addEventListener('DOMContentLoaded', function() {
-            const today = new Date().toISOString().split('T')[0];
-            document.getElementById('startDate').min = today;
-
-            // Update minimum end date when start date changes
-            document.getElementById('startDate').addEventListener('change', function() {
-                document.getElementById('endDate').min = this.value;
-            });
-        });
     </script>
 </body>
 </html>
