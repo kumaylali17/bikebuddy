@@ -31,8 +31,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             error_log("Login attempt for user: $username");
             
             // Get user from database
+            // *** MODIFIED: Fetch 'role' and 'branch_id' instead of 'is_admin' ***
             $stmt = $pdo->prepare("
-                SELECT user_id, username, password, is_admin 
+                SELECT user_id, username, password, role, branch_id 
                 FROM app_user 
                 WHERE username = :username
             ");
@@ -57,27 +58,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $updateStmt->execute(['user_id' => $user['user_id']]);
                     
                     // Set session variables
+                    // *** MODIFIED: Set new session variables ***
                     $_SESSION['user_id'] = $user['user_id'];
                     $_SESSION['username'] = $user['username'];
-                    
-                    // Handle PostgreSQL boolean values
-                    $_SESSION['is_admin'] = (
-                        $user['is_admin'] === true || 
-                        $user['is_admin'] === 't' || 
-                        $user['is_admin'] === '1' ||
-                        $user['is_admin'] === 'true'
-                    );
-                    
-                    // One-time admin user setup (if not already admin)
-                    if ($username === 'admin' && !$user['is_admin']) {
-                        $adminUpdate = $pdo->prepare("UPDATE app_user SET is_admin = TRUE WHERE username = :username");
-                        $adminUpdate->execute(['username' => 'admin']);
-                        $_SESSION['is_admin'] = true;
-                    }
+                    $_SESSION['role'] = $user['role'];
+                    $_SESSION['branch_id'] = $user['branch_id'];
                     
                     // Debug: Log session data
-                    error_log("Session data set - User ID: {$_SESSION['user_id']}, Admin: " . 
-                             ($_SESSION['is_admin'] ? 'Yes' : 'No'));
+                    error_log("Session data set - User ID: {$_SESSION['user_id']}, Role: {$_SESSION['role']}, Branch: {$_SESSION['branch_id']}");
                     
                     // Redirect to dashboard
                     header('Location: dashboard.php');

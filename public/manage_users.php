@@ -8,9 +8,40 @@ session_start([
 
 require_once __DIR__ . '/../config/db.php';
 
-// Check if user is logged in and is admin
-if (!isset($_SESSION['user_id']) || !$_SESSION['is_admin']) {
+// Only the main 'admin' can manage users
+if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'admin') {
     header('Location: login.php');
+    exit();
+}
+
+// Handle form submission for role/branch update
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_user_role'])) {
+    try {
+        $user_id = (int)$_POST['user_id'];
+        $role = (string)$_POST['role'];
+        // Use null if the branch_id is empty (e.g., for 'admin' or 'customer')
+        $branch_id = !empty($_POST['branch_id']) ? (int)$_POST['branch_id'] : null;
+
+        // Prevent admin from demoting themselves
+        if ($user_id === $_SESSION['user_id'] && $role !== 'admin') {
+            throw new Exception('You cannot change your own role.');
+        }
+
+        // Only branch_managers should have a branch_id
+        if ($role !== 'branch_manager') {
+            $branch_id = null;
+        } elseif (empty($branch_id)) {
+            throw new Exception('A Branch Manager must be assigned to a branch.');
+        }
+
+        $stmt = $pdo->prepare("UPDATE app_user SET role = ?, branch_id = ? WHERE user_id = ?");
+        $stmt->execute([$role, $branch_id, $user_id]);
+        $_SESSION['success'] = 'User role updated successfully.';
+
+    } catch (Exception $e) {
+        $_SESSION['error'] = 'Error: ' . $e->getMessage();
+    }
+    header('Location: manage_users.php');
     exit();
 }
 
@@ -19,42 +50,50 @@ if (isset($_GET['delete']) && is_numeric($_GET['delete'])) {
     $userId = (int)$_GET['delete'];
 
     try {
-        // Don't allow deleting yourself
         if ($userId === $_SESSION['user_id']) {
             throw new Exception('You cannot delete your own account.');
         }
+        
+        // Get user role before deleting
+        $roleStmt = $pdo->prepare("SELECT role FROM app_user WHERE user_id = ?");
+        $roleStmt->execute([$userId]);
+        $userToDelete = $roleStmt->fetch();
 
-        // Check if user has active rentals
+        if ($userToDelete && $userToDelete['role'] === 'admin') {
+             throw new Exception('You cannot delete another admin account.');
+        }
+
         $checkStmt = $pdo->prepare("SELECT COUNT(*) FROM rental WHERE user_id = ? AND status = 'active'");
         $checkStmt->execute([$userId]);
         if ($checkStmt->fetchColumn() > 0) {
             throw new Exception('Cannot delete user with active rentals.');
         }
 
-        // Delete user
         $deleteStmt = $pdo->prepare("DELETE FROM app_user WHERE user_id = ?");
         $deleteStmt->execute([$userId]);
-
         $_SESSION['success'] = 'User deleted successfully.';
-    } catch (Exception $e) {
-        $_SESSION['error'] = $e->getMessage();
-    }
 
+    } catch (Exception $e) {
+        $_SESSION['error'] = 'Error: ' . $e->getMessage();
+    }
     header('Location: manage_users.php');
     exit();
 }
+
+// --- Data Fetching ---
 
 // Pagination
 $page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
 $perPage = 10;
 $offset = ($page - 1) * $perPage;
 
-// Get users
+// Get users with branch name
 try {
     $stmt = $pdo->prepare("
-        SELECT user_id, username, email, phone, is_admin, created_at, last_login
-        FROM app_user
-        ORDER BY created_at DESC
+        SELECT u.user_id, u.username, u.email, u.phone, u.role, u.created_at, u.last_login, u.branch_id, b.name as branch_name
+        FROM app_user u
+        LEFT JOIN branch b ON u.branch_id = b.branch_id
+        ORDER BY u.created_at DESC
         LIMIT :limit OFFSET :offset
     ");
     $stmt->bindValue(':limit', $perPage, PDO::PARAM_INT);
@@ -74,8 +113,17 @@ try {
     error_log("Count error: " . $e->getMessage());
     $total = 0;
 }
-
 $totalPages = ceil($total / $perPage);
+
+// Get branches for dropdown
+try {
+    $branches = $pdo->query("SELECT branch_id, name FROM branch ORDER BY name")->fetchAll();
+} catch (PDOException $e) {
+    $branches = [];
+}
+
+// Define roles
+$roles = ['customer', 'branch_manager', 'admin'];
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -84,17 +132,11 @@ $totalPages = ceil($total / $perPage);
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Manage Users - BikeBuddy</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
     <style>
-        .user-card {
-            transition: transform 0.2s;
-        }
-        .user-card:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
-        }
-        .admin-badge {
-            font-size: 0.75rem;
-        }
+        .admin-badge { font-size: 0.8em; }
+        .manager-badge { font-size: 0.8em; }
+        .customer-badge { font-size: 0.8em; }
     </style>
 </head>
 <body>
@@ -109,112 +151,193 @@ $totalPages = ceil($total / $perPage);
         </div>
 
         <?php if (isset($_SESSION['success'])): ?>
-            <div class="alert alert-success"><?php echo $_SESSION['success']; unset($_SESSION['success']); ?></div>
+            <div class="alert alert-success alert-dismissible fade show" role="alert">
+                <?php echo $_SESSION['success']; unset($_SESSION['success']); ?>
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            </div>
         <?php endif; ?>
 
         <?php if (isset($_SESSION['error'])): ?>
-            <div class="alert alert-danger"><?php echo $_SESSION['error']; unset($_SESSION['error']); ?></div>
+            <div class="alert alert-danger alert-dismissible fade show" role="alert">
+                <?php echo $_SESSION['error']; unset($_SESSION['error']); ?>
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            </div>
         <?php endif; ?>
-
-        <?php if (empty($users)): ?>
-            <div class="alert alert-info">
-                <h4>No users found</h4>
-                <p>There are currently no users in the system.</p>
+        
+        <div class="card">
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-hover align-middle">
+                        <thead>
+                            <tr>
+                                <th>Username</th>
+                                <th>Email / Phone</th>
+                                <th>Role</th>
+                                <th>Branch</th>
+                                <th>Joined</th>
+                                <th>Last Login</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php if (empty($users)): ?>
+                                <tr>
+                                    <td colspan="7" class="text-center">No users found.</td>
+                                </tr>
+                            <?php else: ?>
+                                <?php foreach ($users as $user): ?>
+                                    <tr>
+                                        <td><strong><?= htmlspecialchars($user['username']) ?></strong></td>
+                                        <td>
+                                            <div><?= htmlspecialchars($user['email']) ?></div>
+                                            <small class="text-muted"><?= htmlspecialchars($user['phone'] ?? 'N/A') ?></small>
+                                        </td>
+                                        <td>
+                                            <?php
+                                            $badgeClass = 'secondary';
+                                            if ($user['role'] === 'admin') $badgeClass = 'danger';
+                                            if ($user['role'] === 'branch_manager') $badgeClass = 'warning';
+                                            if ($user['role'] === 'customer') $badgeClass = 'primary';
+                                            ?>
+                                            <span class="badge bg-<?= $badgeClass ?>"><?= ucfirst(str_replace('_', ' ', $user['role'])) ?></span>
+                                        </td>
+                                        <td>
+                                            <?= htmlspecialchars($user['branch_name'] ?? 'N/A') ?>
+                                        </td>
+                                        <td><?= date('M j, Y', strtotime($user['created_at'])) ?></td>
+                                        <td>
+                                            <?= $user['last_login'] ? date('M j, Y H:i', strtotime($user['last_login'])) : 'Never' ?>
+                                        </td>
+                                        <td>
+                                            <button class="btn btn-sm btn-warning"
+                                                    data-bs-toggle="modal"
+                                                    data-bs-target="#roleModal"
+                                                    data-user-id="<?= $user['user_id'] ?>"
+                                                    data-username="<?= htmlspecialchars($user['username']) ?>"
+                                                    data-role="<?= $user['role'] ?>"
+                                                    data-branch-id="<?= $user['branch_id'] ?? '' ?>">
+                                                <i class="bi bi-person-gear"></i> Edit Role
+                                            </button>
+                                            
+                                            <?php if ($user['user_id'] !== $_SESSION['user_id']): ?>
+                                                <a href="?delete=<?= $user['user_id'] ?>"
+                                                   class="btn btn-sm btn-outline-danger"
+                                                   onclick="return confirm('Are you sure you want to delete this user?')">
+                                                   <i class="bi bi-trash"></i>
+                                                </a>
+                                            <?php endif; ?>
+                                        </td>
+                                    </tr>
+                                <?php endforeach; ?>
+                            <?php endif; ?>
+                        </tbody>
+                    </table>
+                </div>
             </div>
-        <?php else: ?>
-            <div class="row">
-                <?php foreach ($users as $user): ?>
-                    <div class="col-md-6 mb-4">
-                        <div class="card user-card">
-                            <div class="card-body">
-                                <div class="d-flex justify-content-between align-items-start mb-3">
-                                    <h5 class="card-title mb-0">
-                                        <?php echo htmlspecialchars($user['username']); ?>
-                                        <?php if ($user['is_admin']): ?>
-                                            <span class="badge bg-warning admin-badge">Admin</span>
-                                        <?php endif; ?>
-                                    </h5>
-                                    <?php if ($user['user_id'] !== $_SESSION['user_id']): ?>
-                                        <a href="?delete=<?php echo $user['user_id']; ?>"
-                                           class="btn btn-outline-danger btn-sm"
-                                           onclick="return confirm('Are you sure you want to delete this user?')">
-                                            <i class="bi bi-trash"></i>
-                                        </a>
-                                    <?php endif; ?>
-                                </div>
+        </div>
 
-                                <div class="row mb-2">
-                                    <div class="col-sm-4">Email:</div>
-                                    <div class="col-sm-8">
-                                        <a href="mailto:<?php echo htmlspecialchars($user['email']); ?>">
-                                            <?php echo htmlspecialchars($user['email']); ?>
-                                        </a>
-                                    </div>
-                                </div>
-
-                                <?php if ($user['phone']): ?>
-                                    <div class="row mb-2">
-                                        <div class="col-sm-4">Phone:</div>
-                                        <div class="col-sm-8"><?php echo htmlspecialchars($user['phone']); ?></div>
-                                    </div>
-                                <?php endif; ?>
-
-                                <div class="row mb-2">
-                                    <div class="col-sm-4">Joined:</div>
-                                    <div class="col-sm-8">
-                                        <?php echo date('M j, Y', strtotime($user['created_at'])); ?>
-                                    </div>
-                                </div>
-
-                                <?php if ($user['last_login']): ?>
-                                    <div class="row mb-2">
-                                        <div class="col-sm-4">Last Login:</div>
-                                        <div class="col-sm-8">
-                                            <?php echo date('M j, Y H:i', strtotime($user['last_login'])); ?>
-                                        </div>
-                                    </div>
-                                <?php endif; ?>
-
-                                <div class="mt-3">
-                                    <a href="profile.php?user_id=<?php echo $user['user_id']; ?>"
-                                       class="btn btn-outline-primary btn-sm">
-                                        View Profile
-                                    </a>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                <?php endforeach; ?>
-            </div>
-
-            <!-- Pagination -->
-            <?php if ($totalPages > 1): ?>
-                <nav aria-label="Users pagination" class="mt-4">
-                    <ul class="pagination justify-content-center">
-                        <?php if ($page > 1): ?>
-                            <li class="page-item">
-                                <a class="page-link" href="?page=<?php echo $page - 1; ?>">Previous</a>
-                            </li>
-                        <?php endif; ?>
-
-                        <?php for ($i = 1; $i <= $totalPages; $i++): ?>
-                            <li class="page-item <?php echo $i === $page ? 'active' : ''; ?>">
-                                <a class="page-link" href="?page=<?php echo $i; ?>"><?php echo $i; ?></a>
-                            </li>
-                        <?php endfor; ?>
-
-                        <?php if ($page < $totalPages): ?>
-                            <li class="page-item">
-                                <a class="page-link" href="?page=<?php echo $page + 1; ?>">Next</a>
-                            </li>
-                        <?php endif; ?>
-                    </ul>
-                </nav>
-            <?php endif; ?>
+        <!-- Pagination -->
+        <?php if ($totalPages > 1): ?>
+            <nav aria-label="Users pagination" class="mt-4">
+                <ul class="pagination justify-content-center">
+                    <?php if ($page > 1): ?>
+                        <li class="page-item">
+                            <a class="page-link" href="?page=<?php echo $page - 1; ?>">Previous</a>
+                        </li>
+                    <?php endif; ?>
+                    <?php for ($i = 1; $i <= $totalPages; $i++): ?>
+                        <li class="page-item <?php echo $i === $page ? 'active' : ''; ?>">
+                            <a class="page-link" href="?page=<?php echo $i; ?>"><?php echo $i; ?></a>
+                        </li>
+                    <?php endfor; ?>
+                    <?php if ($page < $totalPages): ?>
+                        <li class="page-item">
+                            <a class="page-link" href="?page=<?php echo $page + 1; ?>">Next</a>
+                        </li>
+                    <?php endif; ?>
+                </ul>
+            </nav>
         <?php endif; ?>
     </div>
 
+    <!-- Edit Role Modal -->
+    <div class="modal fade" id="roleModal" tabindex="-1" aria-labelledby="roleModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <form method="POST">
+                    <div class="modal-header">
+                        <h5 class="modal-title" id="roleModalLabel">Edit User Role</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body">
+                        <input type="hidden" name="user_id" id="modalUserId">
+                        <p>User: <strong id="modalUsername"></strong></p>
+                        
+                        <div class="mb-3">
+                            <label for="modalRole" class="form-label">Role</label>
+                            <select class="form-select" id="modalRole" name="role" required>
+                                <?php foreach ($roles as $role): ?>
+                                    <option value="<?= $role ?>"><?= ucfirst(str_replace('_', ' ', $role)) ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+
+                        <div class="mb-3" id="branchSelectContainer" style="display: none;">
+                            <label for="modalBranch" class="form-label">Branch</label>
+                            <select class="form-select" id="modalBranch" name="branch_id">
+                                <option value="">Select a branch...</option>
+                                <?php foreach ($branches as $branch): ?>
+                                    <option value="<?= $branch['branch_id'] ?>"><?= htmlspecialchars($branch['name']) ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                        <button type="submit" name="update_user_role" class="btn btn-primary">Save changes</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
+    <script>
+        const roleModal = document.getElementById('roleModal');
+        const branchSelectContainer = document.getElementById('branchSelectContainer');
+        const modalRoleSelect = document.getElementById('modalRole');
+
+        if (roleModal) {
+            roleModal.addEventListener('show.bs.modal', function (event) {
+                const button = event.relatedTarget;
+                
+                // Populate modal
+                document.getElementById('modalUserId').value = button.getAttribute('data-user-id');
+                document.getElementById('modalUsername').textContent = button.getAttribute('data-username');
+                
+                const role = button.getAttribute('data-role');
+                modalRoleSelect.value = role;
+                
+                document.getElementById('modalBranch').value = button.getAttribute('data-branch-id');
+                
+                // Show/hide branch dropdown
+                toggleBranchSelect(role);
+            });
+
+            modalRoleSelect.addEventListener('change', function() {
+                toggleBranchSelect(this.value);
+            });
+        }
+
+        function toggleBranchSelect(role) {
+            if (role === 'branch_manager') {
+                branchSelectContainer.style.display = 'block';
+                document.getElementById('modalBranch').required = true;
+            } else {
+                branchSelectContainer.style.display = 'none';
+                document.getElementById('modalBranch').required = false;
+            }
+        }
+    </script>
 </body>
 </html>

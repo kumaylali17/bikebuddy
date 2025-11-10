@@ -1,5 +1,8 @@
 <?php
 $current_page = basename($_SERVER['PHP_SELF']);
+
+// We will use $_SESSION['role'] now instead of $_SESSION['is_admin']
+$user_role = $_SESSION['role'] ?? 'guest';
 ?>
 <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
     <div class="container">
@@ -24,26 +27,44 @@ $current_page = basename($_SERVER['PHP_SELF']);
                     </li>
                 <?php endif; ?>
                 
-                <?php if (isset($_SESSION['is_admin']) && $_SESSION['is_admin']): ?>
+                <?php if ($user_role === 'admin'): ?>
+                <!-- This is the 'Main Admin' dropdown -->
                 <li class="nav-item dropdown">
                     <a class="nav-link dropdown-toggle" href="#" id="adminDropdown" role="button" data-bs-toggle="dropdown">
                         Admin
                     </a>
                     <ul class="dropdown-menu">
-                        <li><a class="dropdown-item" href="manage_bicycles.php">Manage Bicycles</a></li>
-                        <li><a class="dropdown-item" href="manage_rentals.php">Manage Rentals</a></li>
+                        <li><a class="dropdown-item" href="manage_branches.php">Manage Branches</a></li>
+                        <li><a class="dropdown-item" href="manage_bicycles.php">Manage All Bicycles</a></li>
+                        <li><a class="dropdown-item" href="manage_rentals.php">Manage All Rentals</a></li>
                         <li><a class="dropdown-item" href="manage_users.php">Manage Users</a></li>
                         <li><a class="dropdown-item" href="manage_suppliers.php">Manage Suppliers</a></li>
+                        <!-- We will add purchasing later -->
+                        <!-- <li><a class="dropdown-item" href="manage_purchases.php">Manage Purchases</a></li> -->
                     </ul>
                 </li>
                 <?php endif; ?>
+
+                <?php if ($user_role === 'branch_manager'): ?>
+                <!-- This is for a Branch Manager -->
+                <li class="nav-item dropdown">
+                    <a class="nav-link dropdown-toggle" href="#" id="branchAdminDropdown" role="button" data-bs-toggle="dropdown">
+                        Manager
+                    </a>
+                    <ul class="dropdown-menu">
+                        <li><a class="dropdown-item" href="manage_bicycles.php">Manage My Branch's Bicycles</a></li>
+                        <li><a class="dropdown-item" href="manage_rentals.php">Manage My Branch's Rentals</a></li>
+                    </ul>
+                </li>
+                <?php endif; ?>
+
             </ul>
             
             <ul class="navbar-nav">
                 <?php if (isset($_SESSION['user_id'])): ?>
                     <li class="nav-item dropdown">
                         <a class="nav-link dropdown-toggle" href="#" id="userDropdown" role="button" data-bs-toggle="dropdown">
-                            <?= htmlspecialchars($_SESSION['username'] ?? 'User') ?>
+                            <?= htmlspecialchars($_SESSION['username'] ?? 'User') ?> (<?= htmlspecialchars(ucfirst($user_role)) ?>)
                         </a>
                         <ul class="dropdown-menu dropdown-menu-end">
                             <li><a class="dropdown-item" href="profile.php">My Profile</a></li>

@@ -38,31 +38,44 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($checkStmt->rowCount() > 0) {
                 $error = 'Username or email already exists.';
             } else {
+                // *** MODIFIED: Get the first branch_id to assign to new users ***
+                // In a real app, you might let them choose, but this is a good default.
+                $branchStmt = $pdo->query("SELECT branch_id FROM branch ORDER BY branch_id LIMIT 1");
+                $defaultBranch = $branchStmt->fetch();
+                
+                if (!$defaultBranch) {
+                    // This happens if no branches have been created yet.
+                    throw new Exception("Registration is currently disabled. Please contact an admin.");
+                }
+                $defaultBranchId = $defaultBranch['branch_id'];
+
                 // Hash password and create user
                 $hashedPassword = password_hash($password, PASSWORD_DEFAULT);
                 $stmt = $pdo->prepare("
-                    INSERT INTO app_user (username, email, password, is_admin) 
-                    VALUES (:username, :email, :password, FALSE)
+                    INSERT INTO app_user (username, email, password, role, branch_id) 
+                    VALUES (:username, :email, :password, 'customer', :branch_id)
                 ");
                 $stmt->execute([
                     'username' => $username,
                     'email' => $email,
-                    'password' => $hashedPassword
+                    'password' => $hashedPassword,
+                    'branch_id' => $defaultBranchId // Assign the default branch
                 ]);
                 
                 // Log the user in
                 $userId = $pdo->lastInsertId();
                 $_SESSION['user_id'] = $userId;
                 $_SESSION['username'] = $username;
-                $_SESSION['is_admin'] = false; // New users are not admins
+                $_SESSION['role'] = 'customer'; // New users are customers
+                $_SESSION['branch_id'] = $defaultBranchId; // Set their branch in the session
                 
                 // Redirect to dashboard
                 header('Location: dashboard.php');
                 exit();
             }
-        } catch (PDOException $e) {
+        } catch (Exception $e) {
             error_log('Signup error: ' . $e->getMessage());
-            $error = 'An error occurred. Please try again.';
+            $error = 'An error occurred: ' . $e->getMessage();
         }
     }
 }
